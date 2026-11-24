@@ -82,12 +82,12 @@ Default to:
 
 - `const` for everything; `let` only when reassignment is required.
 - Arrow functions for local callbacks / inline handlers (see the **Functions** section below for when to keep declarations).
-- `async / await` over unnecessarily complex `Promise` chains.
+- `async / await` over `Promise` chains. See the **Async code** section for the rule, the rationale, and the canonical `useEffect` + `async` pattern.
 - Optional chaining (`?.`) instead of nested `&&` chains.
 - Nullish coalescing (`??`) instead of `||` for "missing or null/undefined".
 - Destructuring when it improves readability — not because destructuring is "modern."
 - Modern array methods (`map`, `filter`, `reduce`, `flatMap`, `find`, `some`, `every`) over manual `for` loops when the loop does not need indices.
-- Discriminated unions for meaningful state modeling.
+- One flat state object for a status + payload (fields filled in by the conditionals). A discriminated union only when the branch shapes genuinely differ.
 - Type narrowing (`if ("kind" in x)`, `if (x.kind === "loading")`) instead of unsafe casts.
 - `unknown` instead of `any` when the value is genuinely unknown. Narrow before use.
 - Type inference when explicit annotations are redundant. Annotate at module boundaries (function signatures, exported types, props).
@@ -171,6 +171,7 @@ The skill must understand context rather than apply a mechanical replacement.
 - **Pure by default.** Side effects at the edges; logic in the middle is testable.
 - **Accept arguments instead of closing over module state when possible.** Makes the function testable without mocking globals.
 - **Keep the signature honest.** Return type matches what the function returns. If it can return `null`, the signature says so.
+- **No factory that is called once.** `const createThing = () => { … }; export const thing = createThing();` is an indirection with no payoff — the reader has to jump between two names to see what it is, and the "private" state it closes over lives exactly as long as the module anyway. Write the function directly and keep its private state at module scope. Reach for a factory (or a class) only when there is more than one instance.
 
 ---
 
@@ -213,7 +214,7 @@ Identify:
 - Overly broad types (`object`, `Record<string, any>`). Tighten.
 - Types that should be inferred (trivial locals).
 - Types that should be explicit (exports, props, hook return types).
-- Opportunities for discriminated unions over a bag of optional flags.
+- State objects that repeat the whole literal once per branch, or that model a status + payload as a union of object literals (see "Loading / error / not-found states").
 - Inconsistent domain models — the same concept typed two different ways across the codebase.
 
 Do not over-type trivial code. There is no value in annotating a literal that TypeScript already infers.
@@ -232,6 +233,174 @@ Check whether:
 - Error types are handled safely. `error instanceof Error` before reading `.message`.
 
 Do not add excessive defensive code when the surrounding architecture already handles the failure (e.g., a top-level error boundary, a route-level error element).
+
+---
+
+## Async code
+
+**Always use `async` / `await`. Never use `.then().then().catch()` chains.**
+
+A Promise chain forces the reader to mentally invert control flow: each `.then` is a "what happens after", each `.catch` is "what happens if it fails", and the shape of the work is fragmented across three callbacks. `async` / `await` reads top-down like synchronous code, makes the call site one expression instead of three, and lets `try` / `catch` do the job it was designed for.
+
+```ts
+// GOOD — async / await
+const quotation = await getMyQuotation(id);
+if (!quotation) {
+  setState({ kind: "not-found" });
+  return;
+}
+setState({ kind: "ready", bundle: adapt(quotation) });
+
+// BAD — Promise chain
+getMyQuotation(id)
+  .then((quotation) => {
+    if (!quotation) {
+      setState({ kind: "not-found" });
+      return;
+    }
+    setState({ kind: "ready", bundle: adapt(quotation) });
+  })
+  .catch((err) => {
+    setState({ kind: "error", message: errorMessage(err) });
+  });
+```
+
+### The `useEffect` + `async` pattern
+
+`useEffect`'s callback must not return a Promise. The standard form is an **inline async IIFE** — short, single expression, no extra names:
+
+```ts
+useEffect(() => {
+  if (!Number.isFinite(id)) return;
+  (async () => {
+    try {
+      const data = await fetchSomething(id);
+      setState({ kind: "ready", data });
+    } catch (err) {
+      setState({ kind: "error", message: errorMessage(err) });
+    }
+  })();
+}, [id]);
+```
+
+This is the preferred form. The async IIFE is fire-and-forget — the trailing `;` discards the returned Promise. Errors do not escape because the body has its own `try` / `catch`. The `(async () => {...})()` pattern is the one accepted exception to the "no IIFEs" rule, for the same reason `try` / `catch` is: there is no shorter way to express async work inside `useEffect` that still returns a cleanup function.
+
+**Avoid the heavier form.** Do not introduce a named `const run = async () => {...}`, a `void run();` line, or a `let cancelled` flag unless you actually need the cancellation behaviour. That form:
+
+```ts
+// AVOID — extra names, no benefit on a mount-once fetch
+useEffect(() => {
+  let cancelled = false;
+  const run = async () => {
+    try {
+      const data = await fetchSomething(id);
+      if (cancelled) return;
+      setState({ kind: "ready", data });
+    } catch (err) {
+      if (cancelled) return;
+      setState({ kind: "error", message: errorMessage(err) });
+    }
+  };
+  void run();
+  return () => { cancelled = true; };
+}, [id]);
+```
+
+The `cancelled` flag only matters when deps change *while a fetch is in flight* — rare for a single-resource page that loads on mount and is gone when the user navigates away. For those cases, reach for a project-standard data-fetching library (TanStack Query, SWR) before reaching for a hand-rolled cancellation flag. The hand-rolled form is a sign the project is missing a data-layer primitive — fix the layer, not the component.
+
+If the project has a strict floating-Promise lint rule (`@typescript-eslint/no-floating-promises`), add the `void` annotation on the IIFE call: `void (async () => {...})();`. It is a one-token annotation for the linter, not a structural choice.
+
+### Rules
+
+- **No `.then().then().catch()`.** If you find yourself reaching for it, write an `async` function instead.
+- **No `.then()` without an immediately following `.catch()` / `.finally()`** (or in a `try` block).
+- **Await every Promise that has a meaningful return value.** Bare `.then(...)` to read a value is just `.then(x => x)` with extra steps.
+- **`Promise.all([...])` is fine** for parallel fetches inside an `await`-driven function. It is not a Promise chain.
+- **Helpers that do one async thing should be `async function`s**, not `function foo(): Promise<T> { return ...then(...) }`. The body should `await`, not chain.
+- **Error messages**: read `err.message` only after `err instanceof Error`. Wrap low-level errors with `cause` when crossing a domain boundary.
+
+### `useEffect` for fetching: when it is and isn't the right tool
+
+`useEffect` is the right tool when the call is **a side effect of mounting or of a prop/state change** — a fetch, a subscription, a `setInterval`. It is the wrong tool when the call is an **event handler** (use the click handler), a **one-shot initialization that blocks render** (lift it to a parent or use a route loader), or **derivable from existing state** (compute during render instead).
+
+If the project already has a server-state library (TanStack Query, SWR, etc.), prefer that over `useState` + `useEffect`. The combination of `useState` + `useEffect` + manual `loading` / `error` / `ready` state is the fallback for projects that have not adopted one.
+
+### Loading / error / not-found states
+
+Pages that back onto a fetch expose three (sometimes four) states. Model them as **one flat state object** whose fields are filled in by the conditionals — not as a union of object literals:
+
+```ts
+type State<T> = {
+  status: "loading" | "error" | "not-found" | "ready";
+  data: T | null;
+  error: string | null;
+};
+```
+
+```ts
+const state: State<T> = {
+  status: "loading",
+  data: null,
+  error: null,
+};
+
+// Validators first — each one blocks the return and changes what is returned.
+if (errorCode) {
+  state.status = "error";
+  state.error = errorMessages[errorCode];
+  return state;
+}
+
+if (!data) {
+  state.status = "loading";
+  return state;
+}
+
+// The happy path is last.
+if (data) {
+  state.status = "ready";
+  state.data = data;
+}
+
+return state;
+```
+
+**Flow: validators first, happy path last.** Each validator sets the status and returns immediately — it *blocks* the return. The happy path is the last thing that runs. Do not chain the states with `else if`: a chain hides which condition blocks the return, and the reader has to walk the whole chain to know what a branch actually returns.
+
+**Why one object and not a union.** A union of object literals repeats the whole shape once per branch, makes every field conditional on the branch, and forces the consumer to narrow before it can read anything. One flat object is written once, the status discriminates, and the payload fields are `null` until they have a value. The consumer reads `state.status` and the fields it needs.
+
+**Name a field after when it exists, not what it holds.** `error: null` reads correctly ("no error"); `message: null` does not ("no message"?).
+
+A discriminated union is still the right tool when the branches have genuinely different shapes and narrowing is the point — e.g. `{ kind: "user"; user: User } | { kind: "group"; group: Group }` — where there is no single set of fields to share.
+
+Render rules:
+
+- **`loading`** uses the project's `Skeleton` component, not `<div>Loading…</div>`. A skeleton mirrors the eventual layout (subheader + cards + sections) so the layout doesn't jump when the data arrives.
+- **`error`** shows a focused message ("Could not load this X") plus the error text. Do not surface `TypeError: Cannot read property 'foo' of undefined` to the user. Read `err.message` only after `err instanceof Error`.
+- **`not-found`** is a separate state from `error` when the resource can legitimately not exist (404-style). If the page cannot meaningfully distinguish (e.g., the URL has no id and the default is also missing), collapse it into `error`.
+- **`ready`** carries the data and nothing else. No "success" wrapper.
+
+If the page is small and the only states are "loading" and "ready", the `useState` + inline IIFE is enough. Do not reach for a `useAsyncResource`-style custom hook for a single page — see `component-scoped-variables` for the broader "don't extract prematurely" rule.
+
+### Polymorphic rendering: `render`, not `asChild`
+
+If the project uses **base-ui** (`@base-ui/react/*`), the polymorphic element override is the `render` prop, not Radix's `asChild`:
+
+```tsx
+// GOOD — base-ui
+<Button variant="outline" size="sm" render={<Link to="/back" />}>
+  Back
+</Button>
+
+// BAD — Radix pattern, base-ui does not support it
+<Button asChild variant="outline" size="sm">
+  <Link to="/back">Back</Link>
+</Button>
+```
+
+The `render` prop is the right primitive in a base-ui codebase; reaching for `asChild` is a porting tell from a Radix codebase. If you find yourself writing `asChild`, you are in the wrong mental model — switch to `render`.
+
+For Radix-based codebases, the equivalent rule applies in reverse: do not reach for `render`.
 
 ---
 
@@ -288,6 +457,22 @@ Prefer simple code over clever code.
 - **Import order** is the project's `eslint-config` / `prettier` business. Do not invent rules.
 - **Barrel files** (`index.ts` re-exports) are fine for public APIs but expensive when pulled into hot paths — flag when measured.
 - **Type-only imports** when only types are used: `import type { Foo } from "./foo";`.
+- **No inline `import("path").Type` in type positions.** Use a regular import at the top of the file. Inline imports in types usually mean you forgot to import the type (or were too lazy to) — both are fixable in 5 seconds at the import block. Inline imports in values are fine (`import("./x")` for dynamic loading).
+
+  ```ts
+  // BAD
+  interface Props {
+    carrier: import("@/mocks/foo").Carrier;
+    request: import("@/mocks/foo").Request;
+  }
+
+  // GOOD
+  import type { Carrier, Request } from "@/mocks/foo";
+  interface Props {
+    carrier: Carrier;
+    request: Request;
+  }
+  ```
 
 ---
 
@@ -311,7 +496,7 @@ When a project uses a state library, defer to its conventions. The general rules
 - **Local state** is for things only the component cares about. Default to `useState` (or `useReducer` for transitions).
 - **Server state** is for things that live on a server. Use a server-state library (TanStack Query, SWR, etc.) — not `useState` + `useEffect`.
 - **Global state** is rare. Default to lifting state up, then context, then a store. Reach for Redux/Jotai/Zustand only when there is a concrete problem.
-- **Discriminated unions** for state machines: `{ status: "idle" } | { status: "loading" } | { status: "error"; error: Error } | { status: "success"; data: T }`. The exhaustive `switch` then catches missing cases at compile time.
+- **One flat state object** for a status + payload: `{ status: "loading" | "error" | "ready"; data: T | null; error: string | null }`, with the fields filled in by the conditionals. Do not repeat the object literal once per branch. Reserve a discriminated union for branches whose shapes genuinely differ and where narrowing is the point.
 
 ---
 
@@ -355,7 +540,7 @@ Actual correctness, security, maintainability, type-safety, or architectural pro
 
 ### Should Improve
 
-Strong modernization or maintainability recommendations. Examples: function declarations where local arrows read better, plain `for` where `map` / `find` reads better, an opportunity for a discriminated union, missing empty/error states, helper functions outside the component for a single consumer.
+Strong modernization or maintainability recommendations. Examples: function declarations where local arrows read better, plain `for` where `map` / `find` reads better, a state object that repeats its whole literal once per branch, missing empty/error states, helper functions outside the component for a single consumer.
 
 ### Optional
 

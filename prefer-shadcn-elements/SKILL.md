@@ -67,6 +67,34 @@ Do not confuse “only shadcn elements” with a ban on HTML. `<div>`, `<section
 the ban is on replacing the official interactive and UI primitives with
 hand-built or third-party equivalents.
 
+## DO NOT edit files directly under `src/components/ui/`
+
+The files at the top level of `src/components/ui/` (`button.tsx`, `badge.tsx`,
+`sidebar.tsx`, etc.) are produced by the shadcn CLI and get **overwritten** on
+the next `shadcn add`. Two consequences:
+
+1. **Never edit them.** If a fix is needed in a shadcn-regenerated file, the
+   fix belongs in the shadcn registry itself (or in the consumer's
+   `components/ui/[subfolder]/` wrapper), not in the regenerated file.
+2. **The shadcn-regenerated file's imports are part of the contract.** The
+   shadcn CLI expects certain hooks and helpers to exist at certain paths
+   (e.g. `useIsMobile` at `@/hooks/use-mobile`, `cn` from the `cn` package,
+   `useMatchMedia` at `@/lib/helpers/match-media`). Removing or renaming
+   these breaks the next `shadcn add` run.
+
+The exception is **subfolders** under `src/components/ui/` (e.g.
+`data-visual/`, `flex-sheet/`, `flex-table/`, `flex-table-map/`, `flex-map/`,
+`outlined-input/`, `page-line/`, `semantic-tokens/`, `status-badge/`,
+`badge-count/`, `dropdown-menu/`). Those are **project-local additions** that
+ship through the project's own shadcn-style registry, not the base shadcn
+CLI. Edit them freely. The base shadcn CLI does not touch subfolders.
+
+When a shadcn-regenerated file needs an import you removed (e.g. deleting
+`use-mobile.ts` while the regenerated `sidebar.tsx` still imports
+`useIsMobile` from it), **restore the file as a re-export shim** from the
+newer location. Don't update the shadcn-regenerated file to use the new
+import path.
+
 ## Implementation rules
 
 Follow the target project's existing shadcn configuration rather than assuming

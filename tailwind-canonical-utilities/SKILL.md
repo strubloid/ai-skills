@@ -130,6 +130,59 @@ them is wasted work: the next `shadcn add` overwrites them. **Skip them by
 default.** If the user explicitly asks to clean those up too, do it and flag
 the regeneration risk in the summary.
 
+The exception is subfolders under `src/components/ui/` (e.g. `data-visual/`,
+`flex-sheet/`, `status-badge/`, `outlined-input/`) — those are project-local
+additions, not shadcn-regenerated. Edit them freely.
+
+## CRITICAL: canonical `text-N` conflicts with semantic `text-*` in `cn()`
+
+A class like `text-2.5` is a **font-size** utility. A class like `text-info` is a
+**color** utility. They are both `text-*` utilities, so `tailwind-merge`
+treats them as conflicting and keeps only the **last** one in the `cn()` args.
+
+This silently breaks semantic badges. Example:
+
+```ts
+// StatusBadge SIZE_CLASSES — what we tried to write (canonical)
+const SIZE_CLASSES = {
+  sm: "h-5 px-2 py-0.5 text-2.5 [&>svg]:size-2.5!",
+  lg: "h-7 px-2.5 py-1 text-xs [&>svg]:size-3",
+};
+
+// And the override for the "info" semantic variant:
+const override = "bg-info/10 text-info ...";
+
+// cn() result — tailwind-merge STRIPS the color classes!
+cn(badgeVariants({ variant: "destructive" }), override, SIZE_CLASSES.sm);
+// → "bg-info/10 h-5 px-2 py-0.5 text-2.5 ..."  (no text-info!)
+```
+
+The badge then renders with `bg-info/10` (the light blue background) but the
+**default text color** (black), because `text-info` was stripped.
+
+The fix: keep the font-size as an **arbitrary value** (`text-[0.625rem]`) in
+any class string that lives in a `cn()` call alongside semantic `text-info`,
+`text-error`, `text-success`, `text-warning` classes. Tailwind-merge does not
+recognize arbitrary values as `text-*` conflicts.
+
+```ts
+// SAFE — arbitrary value, doesn't conflict with text-info / text-error
+const SIZE_CLASSES = {
+  sm: "h-5 px-2 py-0.5 text-[0.625rem] [&>svg]:size-2.5!",
+};
+```
+
+**Rule:** when a `cn()` call combines size classes (`text-2.5`, `text-xs`, etc.)
+with semantic color classes (`text-info`, `text-error`, `text-success`,
+`text-warning`), keep the size as `text-[Nrem]` or `text-[Npx]` (arbitrary) so
+tailwind-merge does not strip the colors.
+
+This applies to any utility where Tailwind v4 has a conflict between two
+`text-*` semantics. The same trap exists for `bg-*` vs `bg-info/10` (if the
+size class also had `bg-*`) and other prefixes where Tailwind collapses
+"same-prefix" classes. Verify by running `node -e "const {cn}=require('cn'); ..."`
+on the specific cn() call after any canonical conversion.
+
 ## Sanity-check before converting
 
 - Does the value divide cleanly by `0.25rem` (i.e. `4px`)? If not, the

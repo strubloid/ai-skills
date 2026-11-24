@@ -223,6 +223,45 @@ Use a stable, content-derived key. Never `index`, never `Math.random()`. For lis
 
 Every screen backed by data renders three states: loading, error, empty. A spinner alone is not an error state. A blank table is not a "no data" state. If a component renders data, every branch has a UI, and the UI is intentional.
 
+- **Loading** uses the project's `Skeleton` component (mirroring the eventual layout) — not `<div>Loading…</div>`.
+- **Error** shows a focused message ("Could not load this X") plus the error text. Read `err.message` only after `err instanceof Error`; do not surface `TypeError: ...` to the user.
+- **Empty / not-found** is its own state when the resource can legitimately not exist. If the page cannot meaningfully distinguish "not found" from "failed to load", collapse them.
+- Model the states as **one flat object** whose fields are filled in by the conditionals — never as a union of object literals:
+
+  ```tsx
+  type State = {
+    status: "loading" | "error" | "not-found" | "ready";
+    data: User | null;
+    error: string | null;
+  };
+
+  const state: State = { status: "loading", data: null, error: null };
+
+  // Validators first — each one blocks the return and changes what is returned.
+  if (errorCode) {
+    state.status = "error";
+    state.error = errorMessages[errorCode];
+    return state;
+  }
+
+  if (!data) {
+    state.status = "loading";
+    return state;
+  }
+
+  // The happy path is last.
+  if (data) {
+    state.status = "ready";
+    state.data = data;
+  }
+
+  return state;
+  ```
+
+  The whole object is written **once**. A union of object literals repeats the shape per branch, makes every field conditional on the branch, and forces the consumer to narrow before it can read anything. Validators come first and each one blocks the return; the happy path is last. Do not chain the states with `else if` — a chain hides which condition blocks the return.
+
+The full rationale and async-fetch pattern live in `modern-idiomatic-code` under "Loading / error / not-found states". The headline here: skeleton, not a spinner; one state object written once, not a literal repeated per branch.
+
 ## 15. Business logic out of components
 
 Components render. They do not fetch, validate, transform, or decide. Extract fetching to hooks/services, validation to schemas, transformations to pure functions. A component should read top-to-bottom as: receive props, derive render values, return JSX.
@@ -243,7 +282,7 @@ function StatusBadge({ user }: { user: User }) {
 
 ## 16. Strict TypeScript
 
-`strict: true`. No `any`. No `as` to silence an error unless you have left a one-line comment explaining why. No `enum` (use `as const` tuples). No `// @ts-ignore`. Prefer discriminated unions for state.
+`strict: true`. No `any`. No `as` to silence an error unless you have left a one-line comment explaining why. No `enum` (use `as const` tuples). No `// @ts-ignore`. One flat state object for a status + payload; a discriminated union only when the branch shapes genuinely differ and narrowing is the point.
 
 ```tsx
 // BAD
@@ -251,12 +290,21 @@ const status: any = getStatus();
 
 // GOOD
 const status = getStatus();
-if (status.kind === "error") { ... }  // narrows via discriminated union
+if (status.kind === "error") { ... }  // narrows when the branch shapes differ
 ```
 
-## 17. No mutating props, state, or refs' `.current`
+## 17. No mutating props, React state, or refs' `.current`
 
-Props are read-only. State is replaced, not mutated. `ref.current` is the only place mutation is acceptable, and even there it does not trigger a re-render. `array.push`, `state.foo = x`, `props.onChange(items)` — all forbidden. Always return a new reference.
+Props are read-only. React state (`useState`, a store slice) is replaced, not mutated. `ref.current` is the only place mutation is acceptable, and even there it does not trigger a re-render. `array.push`, `setState.foo = x`, `props.onChange(items)` — all forbidden. Always return a new reference.
+
+Building a **local** object and filling in its fields before returning it is not state mutation — that is the one-object state pattern from §14:
+
+```tsx
+const state: State = { status: "loading", data: null, error: null };
+state.status = "ready";
+state.data = data;
+return state;
+```
 
 ## 18. Co-locate, do not type-sort
 
@@ -325,3 +373,23 @@ A component file, when finished, looks like:
 5. Nothing else. No module-scope constants for one consumer. No helper functions for one consumer. No "in case" comments. No single-consumer sub-components extracted to their own file (rule 2).
 
 If a finished component file is longer than the screen can hold, it is doing too much. Split it — but split by *feature*, not by *type*.
+
+## 24. Polymorphic rendering: `render`, not `asChild`
+
+If the project uses **base-ui** (`@base-ui/react/*`), the polymorphic element override is the `render` prop:
+
+```tsx
+<Button variant="outline" size="sm" render={<Link to="/back" />}>
+  Back
+</Button>
+```
+
+Do not reach for Radix's `asChild`:
+
+```tsx
+<Button asChild variant="outline" size="sm">
+  <Link to="/back">Back</Link>
+</Button>
+```
+
+`asChild` does not exist in base-ui; writing it is a porting tell from a Radix codebase, and it produces a type error that the user pays for. The rule is symmetric: in a Radix codebase, use `asChild`, not `render`.

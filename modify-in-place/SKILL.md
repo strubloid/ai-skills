@@ -183,6 +183,38 @@ If you're tempted to restructure because "it would be cleaner," do the
 minimal modification first, stop, and ask. The user can ask for the cleanup
 as a separate step.
 
+## Don't rename functions, types, or variables that were working fine
+
+A "rename for clarity" ask is a common request that often causes churn. The
+rename looks harmless in isolation, but every call site and every type
+narrowing has to be updated, and the result is a sprawling diff that the user
+has to review. **Rename only what the user specifically named.** If a
+recommendation in `different-things.md` says "rename `loadUserItems` to
+`getNavItems` for clarity", treat that as a *suggestion*, not a directive —
+the function name was working, and the file move / typo fix are the real
+fixes.
+
+Symptoms of a rename that should not have happened:
+- The function or type was already exported and used in two+ call sites.
+- The new name is subjective ("more descriptive", "more conventional"),
+  not required by a code error or a new consumer.
+- The rename was part of a "clean up" pass where the user didn't ask for
+  renames specifically.
+
+If the rename is genuinely needed, do it as a standalone, reviewable diff
+— not bundled with a file move, a class change, or any other modification.
+
+## `cn()` / `tailwind-merge` caveat for class renames
+
+When a "class rename" is part of the ask (e.g. `text-[0.625rem]` →
+`text-2.5` per the `tailwind-canonical-utilities` skill), verify the change
+doesn't strip sibling classes in a `cn()` call. `tailwind-merge` collapses
+"same-prefix" classes and keeps only the last one. A canonical `text-2.5`
+(font-size) will strip a `text-info` or `text-error` (color) that lives in
+the same `cn()` arg list. See the `tailwind-canonical-utilities` skill for the
+full rule. When in doubt, run the `cn()` with the candidate classes in
+`node -e "..."` and check the output before committing.
+
 ---
 
 ## Why this skill exists — the failure modes

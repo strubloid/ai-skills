@@ -103,3 +103,31 @@ frontend clean is:
 - Never hardcode a color that maps to a specific business meaning in
   one app (e.g. "this exact green means approved in [app]").
   If a status needs a color, parameterize it.
+
+## Don't merge two registry helpers into one
+
+The shadcn-ui registry publishes separate files at separate paths
+(`@/lib/helpers/env.ts`, `@/lib/helpers/is-below-sm.ts`, `@/hooks/use-mobile.ts`,
+etc.). Each file's path and exports are part of the consumer's import
+contract. If a shadcn-regenerated file (`components/ui/sidebar.tsx`) imports
+`useIsMobile` from `@/hooks/use-mobile`, the path and export are fixed.
+
+When consolidating two helpers ("merge `useIsBelowSm` and `useIsMobile` into
+a single `useMatchMedia`"), the merged file replaces both source files. The
+shadcn-regenerated consumer still imports from the old path → the build
+breaks. The fix is one of:
+
+- Restore the old file as a re-export shim from the new location:
+
+  ```ts
+  // src/hooks/use-mobile.ts (shim, not the original)
+  export { useIsMobile } from "@/hooks/use-match-media";
+  ```
+
+- Or, more honestly, just don't merge them. The two helpers look the same
+  to you but the shadcn-regenerated file is a third consumer you didn't see.
+  Leave them as two files.
+
+The rule: when a refactor would remove a path or export that a shadcn-
+regenerated file imports, **don't remove it**. Either preserve the path
+with a re-export shim, or leave the helper alone.

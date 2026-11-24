@@ -58,6 +58,42 @@ function StatusTable({ rows }: Props) {
 
 Default to inside. Reach for the carve-outs only when there's a real reason.
 
+## Folder location when the value escapes the file (2026 colocation)
+
+When a value needs to be a real cross-file helper, the location is determined
+by **how many places consume it**, not by what it is. This is the 2026
+"feature-based with colocation" rule (Robin Wieruch, Kasun Nadeera 2026
+guide, Lars Waechter, React docs "Colocation" section).
+
+| Consumer count | Location | Reasoning |
+|---|---|---|
+| 1 (single page / feature) | Co-locate with the consumer (same folder, or inside the file) | Don't promote to shared until a 2nd consumer appears |
+| 2-3 within one feature | Co-locate with the feature (e.g. `pages/app/nav-items.ts` if both consumers are in `pages/app/`) | The data is "feature-local", not "app-wide" |
+| 2+ across features, app-wide, or a shadcn-registry helper | `@/lib/helpers/` | True cross-cutting reusable code |
+| API / external integration | `@/services/` | Not for static data — only for things that talk to a backend, a 3rd party, or an external system |
+| Custom hook (1+ consumer) | `@/hooks/` | Hooks are reusable by convention even with one consumer |
+| Domain types | `@/types/` | One source of truth per entity, shared across pages and services |
+
+Examples that get this right and wrong:
+
+- `src/lib/nav-items.ts` (loaded by `AppHeaderMenu` + `AppSidebar`, both in
+  `pages/app/`) → **wrong**; should be `src/pages/app/nav-items.ts`. The data
+  is feature-local to the app shell, not app-wide.
+- `src/lib/helpers/env.ts` (loaded by the shadcn-regenerated `use-mapbox-map.ts`,
+  used by every map-based feature) → **right**; this is cross-cutting.
+- `src/lib/helpers/format.ts` (loaded by every table, chart, and detail page)
+  → **right**; pure formatters with no domain coupling.
+- `src/services/load-user-items.ts` returning a static array → **wrong**;
+  `services/` is for API/external integration. Either co-locate with the
+  consumer (`pages/app/`) or — if the data ever becomes async — wrap it in a
+  service that actually returns a Promise.
+
+The shadcn-ui registry convention is the source of truth for which files
+live in `@/lib/helpers/`: `env.ts`, `format.ts`, `is-below-sm.ts`, `table.ts`.
+A registry helper at that path is byte-identical to the registry version. If
+a file is in `@/lib/helpers/`, it should be one of those four (or another
+registry-published helper); otherwise it should be co-located.
+
 ## Single file for a single consumer
 
 The variable rule extends to files. A component used by exactly one other component lives in the same file as that consumer — not in its own file. Extract to a new file when 2+ places consume it, not before.
@@ -96,3 +132,19 @@ The carve-outs match the variable rule:
 - The parent file has grown unreadable. At that point, split by *feature* (one feature per file), not by *type* (one component per file).
 
 If a future change adds a second consumer, *then* extract. Not before.
+
+## Don't extract a custom hook for one or two call sites
+
+The same rule applies one level up. A `useFooResource` hook that is consumed by exactly one page is a smell. It pretends to be reusable. It is not. The hook file is one more thing to navigate, one more place to keep in sync, and the page that uses it still has to know what the hook does — you have not actually simplified anything.
+
+The same is true for a hook consumed by two pages when the pages differ in non-trivial ways (different data shapes, different error semantics). Two call sites are a *signal* that the abstraction might be worth it, not proof.
+
+Default: inline the data-fetching / state-machine logic in the page. Extract a custom hook when one of the following is true:
+
+- There are three or more call sites with the same shape.
+- The hook encodes a self-contained concept (e.g., a server-state primitive) that has a clear API and tests.
+- The team has decided to use a data-fetching library for the project, and the hook is the project's primitive for it.
+
+If the abstraction is wrong, deleting the hook file is one delete — and the inlined copies are easier to evolve independently than two consumers locked into a shared hook.
+
+The same rule applies to extract `useFooStore` / `useFooMachine` style hooks when they have one consumer. A component-scoped reducer (`useReducer` inside the page) is usually the right primitive for a single page with a non-trivial state machine.
